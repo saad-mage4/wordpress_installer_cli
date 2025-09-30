@@ -614,8 +614,8 @@ add_action('acf/init', function () {
             ],
             [
                 'key'   => 'field_instructor_bio',
-                'label' => 'Bio',
-                'name'  => 'bio',
+                'label' => 'Biography',
+                'name'  => 'biography',
                 'type'  => 'wysiwyg',
                 'tabs'  => 'all',
                 'toolbar' => 'full',
@@ -1161,7 +1161,7 @@ FILES=("single-programs.php" "archive-programs.php" "archive-instructors.php" "s
 
 for f in "${FILES[@]}"; do
   case "$f" in
-    single-*)
+    "single-programs.php")
       cat > "$CHILD_PATH/$f" <<'PHP'
 <?php
 get_header();
@@ -1225,7 +1225,7 @@ get_footer();
 ?>
 PHP
       ;;
-    archive-*)
+    "archive-programs.php")
       cat > "$CHILD_PATH/$f" <<'PHP'
 <?php
 get_header(); 
@@ -1307,7 +1307,7 @@ get_footer();
 ?>
 PHP
       ;;
-archive-*)
+"archive-instructors.php")
       cat > "$CHILD_PATH/$f" <<'PHP'
 <?php
 get_header(); 
@@ -1389,7 +1389,7 @@ get_footer();
 ?>
 PHP
   ;;
-single-*)
+"single-instructors.php")
       cat > "$CHILD_PATH/$f" <<'PHP'
 <?php
 get_header();
@@ -1405,6 +1405,14 @@ if (have_posts()) :
             </div>
           <?php endif; ?>
         </header>
+
+        <?php if (has_post_thumbnail()) : ?>
+            <div class="program-thumbnail">
+                <a href="<?php the_permalink(); ?>">
+                    <?php the_post_thumbnail('large'); ?>
+                </a>
+            </div>
+        <?php endif; ?>
 
         <div class="entry-content">
           <?php the_content(); ?>
