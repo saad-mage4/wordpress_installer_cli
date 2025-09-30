@@ -1,0 +1,108 @@
+* {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+}
+
+// Variables
+:root {
+        --primary-color: #f14160;
+        --secondary-color: #000;
+        --font-color: #333;
+        --background-color: #f9f9f9;
+}
+
+// Responsive Mixin
+@mixin responsive($breakpoint) {
+        @if $breakpoint ==mobile {
+                @media (max-width: 600px) {
+                        @content;
+                }
+        }
+
+        @else if $breakpoint ==tablet {
+                @media (max-width: 900px) {
+                        @content;
+                }
+        }
+
+        @else if $breakpoint ==desktop {
+                @media (min-width: 901px) {
+                        @content;
+                }
+        }
+}
+
+.wrap {
+        padding: 20px;
+        background: linear-gradient(45deg, #000 0%, var(--primary-color) 100%);
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        margin-bottom: 20px;
+
+        >h1 {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                color: #fff;
+
+                span {
+                        background-color: #fff;
+                        color: #000;
+                        ;
+                        padding: 10px;
+                        border-radius: 4px;
+                }
+        }
+}
+
+.wrap-body {
+        max-width: calc(100% - 20px);
+        min-height: 70vh;
+
+        form {
+                max-width: 500px;
+                margin-inline: auto;
+
+                .form-group {
+                        margin-bottom: 15px;
+
+                        label {
+                                display: block;
+                                margin-bottom: 5px;
+                                font-weight: bold;
+                        }
+
+                        input:not([type="submit"], [type="button"], [type="checkbox"], [type="radio"]),
+                        textarea,
+                        select {
+                                width: 100%;
+                                padding: 8px;
+                                border: 1px solid;
+                                border-radius: 4px;
+                                font-size: 14px;
+
+                                &:focus {
+                                        border-color: var(--primary-color);
+                                        outline: none;
+                                        box-shadow: 0 0 5px rgba(241, 65, 96, 0.5);
+                                }
+                        }
+
+                        button {
+
+                                padding: 10px;
+                                background-color: var(--primary-color);
+                                outline: none;
+                                border: 2px solid var(--primary-color);
+                                color: #fff;
+                                font-weight: bold;
+                                cursor: pointer;
+                                border-radius: 4px;
+                                line-height: normal;
+                        }
+                }
+
+                &#dtp-import-form {}
+        }
+}
