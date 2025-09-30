@@ -251,78 +251,99 @@ wp core install \
   --admin_email="$WP_ADMIN_EMAIL" \
   --path="$WP_PATH" --allow-root
 
-# ---------- Install local plugin ZIPs (explicit list or auto-discover) ----------
-echo "📦 Installing local plugins from script directory..."
+# ---------- Install local plugins (folder or zip) ----------
+echo "📦 Installing local plugins from script/launch directory (dir or zip)..."
 
-# 1) Explicit list (edit these or leave empty to auto-discover)
-LOCAL_PLUGIN_ZIPS=(
-  "devteampro-dotnet-wp.zip"
-  # "another-plugin.zip"
-  # "/absolute/path/to/some-plugin.zip"
+# 1) List of local plugins. Put either a folder name or a zip filename.
+LOCAL_PLUGINS=(
+  "devteampro-dotnet-wp"   # folder beside the script
+  # "another-plugin"       # folder
+  # "some-plugin.zip"      # zip
+  # "/absolute/path/custom-plugin" or "/abs/path/custom-plugin.zip"
 )
 
-# 2) If no explicit entries, auto-discover *.zip next to the script (and launch dir)
-if [ "${#LOCAL_PLUGIN_ZIPS[@]}" -eq 0 ]; then
-  echo "🔎 No explicit ZIPs listed — auto-discovering *.zip..."
-  mapfile -t LOCAL_PLUGIN_ZIPS < <(
-    { [ -n "$ORIGINAL_SCRIPT_DIR" ] && find "$ORIGINAL_SCRIPT_DIR" -maxdepth 1 -type f -name '*.zip' -print; } 2>/dev/null
-    { [ -n "$ORIGINAL_CWD" ]        && find "$ORIGINAL_CWD"        -maxdepth 1 -type f -name '*.zip' -print; } 2>/dev/null
+# If you leave the array empty, we can auto-discover; otherwise we use your list.
+if [ "${#LOCAL_PLUGINS[@]}" -eq 0 ]; then
+  echo "🔎 Auto-discovering local plugins (*.zip and directories) ..."
+  mapfile -t LOCAL_PLUGINS < <(
+    { [ -n "$ORIGINAL_SCRIPT_DIR" ] && find "$ORIGINAL_SCRIPT_DIR" -maxdepth 1 -mindepth 1 \( -type d -o -type f -name '*.zip' \) -printf "%p\n"; } 2>/dev/null
+    { [ -n "$ORIGINAL_CWD" ]        && find "$ORIGINAL_CWD"        -maxdepth 1 -mindepth 1 \( -type d -o -type f -name '*.zip' \) -printf "%p\n"; } 2>/dev/null
   )
-  # de-dupe
-  if [ "${#LOCAL_PLUGIN_ZIPS[@]}" -gt 0 ]; then
-    LOCAL_PLUGIN_ZIPS=($(printf "%s\n" "${LOCAL_PLUGIN_ZIPS[@]}" | awk '!seen[$0]++'))
+  # De-dupe
+  if [ "${#LOCAL_PLUGINS[@]}" -gt 0 ]; then
+    LOCAL_PLUGINS=($(printf "%s\n" "${LOCAL_PLUGINS[@]}" | awk '!seen[$0]++'))
   fi
 fi
 
-# 3) Bail if still nothing
-if [ "${#LOCAL_PLUGIN_ZIPS[@]}" -eq 0 ]; then
-  echo "ℹ️ No plugin ZIPs found to install."
-else
-  # Multisite-aware activation
-  IS_MS="$(wp eval 'echo is_multisite()?1:0;' --path="$WP_PATH" --allow-root 2>/dev/null || echo 0)"
-  ACTIVATE_FLAG=$([ "$IS_MS" = "1" ] && echo "--activate-network" || echo "--activate")
+# Helper: resolve an item to a full path (dir or zip)
+resolve_item_path() {
+  local item="$1"
+  # absolute or relative existing path?
+  if [ -e "$item" ]; then echo "$item"; return 0; fi
+  # try script dir / launch dir
+  for base in "$ORIGINAL_SCRIPT_DIR" "$ORIGINAL_CWD"; do
+    if [ -e "$base/$item" ]; then echo "$base/$item"; return 0; fi
+  done
+  return 1
+}
 
-  PLUGINS_DIR="$WP_PATH/wp-content/plugins"
-  [ "$(id -u)" -eq 0 ] && SUDO="" || SUDO="sudo"
-  $SUDO mkdir -p "$PLUGINS_DIR"
+PLUGINS_DIR="$WP_PATH/wp-content/plugins"
+[ "$(id -u)" -eq 0 ] && SUDO="" || SUDO="sudo"
+$SUDO mkdir -p "$PLUGINS_DIR"
 
-  # Helper: resolve path for items that are just filenames
-  resolve_zip_path() {
-    local item="$1"
-    [ -f "$item" ] && { echo "$item"; return; }
-    for base in "$ORIGINAL_SCRIPT_DIR" "$ORIGINAL_CWD"; do
-      [ -f "$base/$item" ] && { echo "$base/$item"; return; }
-    done
-    echo ""
-  }
+# multisite flag
+IS_MS="$(wp eval 'echo is_multisite()?1:0;' --path="$WP_PATH" --allow-root 2>/dev/null || echo 0)"
+ACTIVATE_FLAG=$([ "$IS_MS" = "1" ] && echo "--activate-network" || echo "--activate")
 
-  for item in "${LOCAL_PLUGIN_ZIPS[@]}"; do
-    ZIP_PATH="$(resolve_zip_path "$item")"
-    if [ -z "$ZIP_PATH" ]; then
-      echo "❌ ZIP not found: $item"
-      continue
+for item in "${LOCAL_PLUGINS[@]}"; do
+  ITEM_PATH="$(resolve_item_path "$item")" || { echo "❌ Not found: $item"; continue; }
+
+  if [ -d "$ITEM_PATH" ]; then
+    # ===== Directory plugin install =====
+    SLUG="$(basename "$ITEM_PATH")"
+    DEST_DIR="$PLUGINS_DIR/$SLUG"
+    echo "📁 Installing directory plugin: $SLUG"
+    if command -v rsync >/dev/null 2>&1; then
+      $SUDO rsync -a --delete "$ITEM_PATH"/ "$DEST_DIR"/
+    else
+      # Fallback without rsync (less ideal if removing files)
+      $SUDO rm -rf "$DEST_DIR"
+      $SUDO mkdir -p "$DEST_DIR"
+      $SUDO cp -a "$ITEM_PATH"/. "$DEST_DIR"/
     fi
+    # basic perms (you also run a full perms pass later)
+    $SUDO find "$DEST_DIR" -type d -exec chmod 755 {} \;
+    $SUDO find "$DEST_DIR" -type f -exec chmod 644 {} \;
 
-    # (Optional) quick plugin ZIP sanity check if unzip exists: looks for a PHP file with a plugin header
-    if command -v unzip >/dev/null 2>&1; then
-      if ! unzip -p "$ZIP_PATH" | head -c 1 >/dev/null 2>&1; then
-        echo "⚠️ Not a valid ZIP? $ZIP_PATH — skipping."
-        continue
+    # Try to activate
+    if wp plugin activate "$SLUG" --path="$WP_PATH" --allow-root >/dev/null 2>&1; then
+      echo "✅ Activated (dir): $SLUG"
+    else
+      # WP-CLI sometimes warns yet activates; double-check:
+      if wp plugin is-active "$SLUG" --path="$WP_PATH" --allow-root; then
+        echo "✅ Activated (dir, with warnings): $SLUG"
+      else
+        echo "⚠️ Could not activate (dir): $SLUG"
       fi
     fi
 
-    DEST_ZIP_PATH="$PLUGINS_DIR/$(basename "$ZIP_PATH")"
-    echo "📥 Copying $(basename "$ZIP_PATH") → $DEST_ZIP_PATH"
-    $SUDO cp -f "$ZIP_PATH" "$DEST_ZIP_PATH"
+  elif [ -f "$ITEM_PATH" ] && [[ "$ITEM_PATH" == *.zip ]]; then
+    # ===== ZIP plugin install =====
+    ZIP_BASENAME="$(basename "$ITEM_PATH")"
+    DEST_ZIP_PATH="$PLUGINS_DIR/$ZIP_BASENAME"
+    echo "🧩 Installing zip plugin: $ZIP_BASENAME"
+    $SUDO cp -f "$ITEM_PATH" "$DEST_ZIP_PATH"
     $SUDO chmod 644 "$DEST_ZIP_PATH"
 
     if wp plugin install "$DEST_ZIP_PATH" $ACTIVATE_FLAG --force --path="$WP_PATH" --allow-root; then
-      echo "✅ Installed & activated: $(basename "$ZIP_PATH")"
+      echo "✅ Installed & activated (zip): $ZIP_BASENAME"
     else
-      echo "⚠️ Install reported an issue for: $(basename "$ZIP_PATH")"
+      echo "⚠️ Install reported an issue for zip: $ZIP_BASENAME"
     fi
-  done
-fi
+  else
+    echo "⚠️ Unsupported item (not dir or .zip): $ITEM_PATH"
+  fi
+done
 
 # ---------- Theme Setup ----------
 echo "🎨 Installing Hello Elementor Theme..."
