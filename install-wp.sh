@@ -106,65 +106,68 @@ mkdir -p "$WP_PATH"
 cd "$WP_PATH" || exit 1
 
 # ---------- Host & Apache VirtualHost (non-destructive) ----------
-echo "🌐 Preparing local host + Apache vhost..."
+CREATE_VIRTUAL_HOST="${CREATE_VIRTUAL_HOST:-0}"
 
-# Derive host from WP_URL
-WP_HOST="$(echo "$WP_URL" | sed -E 's~^[a-z]+://~~; s~/.*$~~; s~:.*$~~')"
-[ -z "$WP_HOST" ] && { echo "❌ Could not derive host from WP_URL=$WP_URL"; exit 1; }
-echo "🔎 Derived host: $WP_HOST"
+if [ "$CREATE_VIRTUAL_HOST" = "1" ]; then
+  echo "🌐 Preparing local host + Apache vhost..."
 
-# sudo helper
-if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+  # Derive host from WP_URL
+  WP_HOST="$(echo "$WP_URL" | sed -E 's~^[a-z]+://~~; s~/.*$~~; s~:.*$~~')"
+  [ -z "$WP_HOST" ] && { echo "❌ Could not derive host from WP_URL=$WP_URL"; exit 1; }
+  echo "🔎 Derived host: $WP_HOST"
 
-# 1) /etc/hosts (append if missing, with newline safety + dedupe)
-HOSTS_FILE="/etc/hosts"
-if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+  # sudo helper
+  if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
-# Only append if hostname not already mapped on 127.0.0.1
-if ! grep -Eq "^[[:space:]]*127\.0\.0\.1[[:space:]].*\b${WP_HOST}\b" "$HOSTS_FILE"; then
-  echo "🧾 Adding hosts entry → 127.0.0.1 ${WP_HOST}"
+  # 1) /etc/hosts (append if missing, with newline safety + dedupe)
+  HOSTS_FILE="/etc/hosts"
+  if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
 
-  # Ensure file ends with a newline, otherwise appending will glue to last line
-  if [ -n "$($SUDO tail -c1 "$HOSTS_FILE" 2>/dev/null)" ]; then
-    $SUDO sh -c "printf '\n' >> '$HOSTS_FILE'"
+  # Only append if hostname not already mapped on 127.0.0.1
+  if ! grep -Eq "^[[:space:]]*127\.0\.0\.1[[:space:]].*\b${WP_HOST}\b" "$HOSTS_FILE"; then
+    echo "🧾 Adding hosts entry → 127.0.0.1 ${WP_HOST}"
+
+    # Ensure file ends with a newline, otherwise appending will glue to last line
+    if [ -n "$($SUDO tail -c1 "$HOSTS_FILE" 2>/dev/null)" ]; then
+      $SUDO sh -c "printf '\n' >> '$HOSTS_FILE'"
+    fi
+
+    # Remove any existing non-comment lines containing the host (dedupe/clean)
+    TMP_H="$(mktemp)"
+    $SUDO awk -v host="$WP_HOST" '
+      /^[[:space:]]*#/ { print; next }               # keep comments
+      {
+        drop=0
+        for (i=1;i<=NF;i++) if ($i==host) { drop=1; break }
+        if (!drop) print
+      }' "$HOSTS_FILE" > "$TMP_H"
+    $SUDO cp "$TMP_H" "$HOSTS_FILE"
+    rm -f "$TMP_H"
+
+    # Append the correct mapping (with its own newline)
+    $SUDO sh -c "printf '127.0.0.1\t%s\n' '$WP_HOST' >> '$HOSTS_FILE'"
+  else
+    echo "ℹ️ Hosts entry for ${WP_HOST} already present."
   fi
 
-  # Remove any existing non-comment lines containing the host (dedupe/clean)
-  TMP_H="$(mktemp)"
-  $SUDO awk -v host="$WP_HOST" '
-    /^[[:space:]]*#/ { print; next }               # keep comments
-    {
-      drop=0
-      for (i=1;i<=NF;i++) if ($i==host) { drop=1; break }
-      if (!drop) print
-    }' "$HOSTS_FILE" > "$TMP_H"
-  $SUDO cp "$TMP_H" "$HOSTS_FILE"
-  rm -f "$TMP_H"
+  # 2) Apache block inside 000-default.conf (append or update only our marked block)
+  if command -v apache2 >/dev/null 2>&1 || ps -A | grep -q apache2; then
+    VHOST_FILE="/etc/apache2/sites-available/000-default.conf"
+    [ -f "$VHOST_FILE" ] || { echo "❌ $VHOST_FILE not found"; exit 1; }
 
-  # Append the correct mapping (with its own newline)
-  $SUDO sh -c "printf '127.0.0.1\t%s\n' '$WP_HOST' >> '$HOSTS_FILE'"
-else
-  echo "ℹ️ Hosts entry for ${WP_HOST} already present."
-fi
+    TS="$(date +%Y%m%d-%H%M%S)"
+    $SUDO cp "$VHOST_FILE" "${VHOST_FILE}.bak.${TS}"
+    echo "🗄️  Backup created: ${VHOST_FILE}.bak.${TS}"
 
-# 2) Apache block inside 000-default.conf (append or update only our marked block)
-if command -v apache2 >/dev/null 2>&1 || ps -A | grep -q apache2; then
-  VHOST_FILE="/etc/apache2/sites-available/000-default.conf"
-  [ -f "$VHOST_FILE" ] || { echo "❌ $VHOST_FILE not found"; exit 1; }
+    LOG_STEM="$(basename "$WP_PATH" | tr -cd '[:alnum:]_-')"
+    [ -z "$LOG_STEM" ] && LOG_STEM="wordpress"
 
-  TS="$(date +%Y%m%d-%H%M%S)"
-  $SUDO cp "$VHOST_FILE" "${VHOST_FILE}.bak.${TS}"
-  echo "🗄️  Backup created: ${VHOST_FILE}.bak.${TS}"
+    BLOCK_BEGIN="# BEGIN wp-cli ${WP_HOST}"
+    BLOCK_END="# END wp-cli ${WP_HOST}"
 
-  LOG_STEM="$(basename "$WP_PATH" | tr -cd '[:alnum:]_-')"
-  [ -z "$LOG_STEM" ] && LOG_STEM="wordpress"
-
-  BLOCK_BEGIN="# BEGIN wp-cli ${WP_HOST}"
-  BLOCK_END="# END wp-cli ${WP_HOST}"
-
-  # Build fresh block content
-  TMP_BLOCK="$(mktemp)"
-  cat > "$TMP_BLOCK" <<EOF
+    # Build fresh block content
+    TMP_BLOCK="$(mktemp)"
+    cat > "$TMP_BLOCK" <<EOF
 ${BLOCK_BEGIN}
 <VirtualHost *:80>
     ServerName ${WP_HOST}
@@ -183,43 +186,46 @@ ${BLOCK_BEGIN}
 ${BLOCK_END}
 EOF
 
-  # If our block exists → replace it; else → append it
-  if grep -qF "$BLOCK_BEGIN" "$VHOST_FILE"; then
-    echo "✏️ Updating existing vhost block for ${WP_HOST} in 000-default.conf"
-    TMP_FILE="$(mktemp)"
-    awk -v start="$BLOCK_BEGIN" -v end="$BLOCK_END" '
-      BEGIN {inblk=0}
-      {
-        if ($0==start) {print start; inblk=1; next}
-        if ($0==end)   {print end; inblk=0; next}
-        if (!inblk) print
-      }' "$VHOST_FILE" > "$TMP_FILE"
-    # Insert fresh block at the end (keeps order, avoids nested awk complexity)
-    $SUDO bash -c "cat '$TMP_FILE' > '$VHOST_FILE'"
-    $SUDO bash -c "printf '\n\n' >> '$VHOST_FILE'"
-    $SUDO bash -c "cat '$TMP_BLOCK' >> '$VHOST_FILE'"
-    rm -f "$TMP_FILE"
-  else
-    echo "➕ Appending new vhost block for ${WP_HOST} to 000-default.conf"
-    $SUDO bash -c "printf '\n\n' >> '$VHOST_FILE'"
-    $SUDO bash -c "cat '$TMP_BLOCK' >> '$VHOST_FILE'"
-  fi
-  rm -f "$TMP_BLOCK"
+    # If our block exists → replace it; else → append it
+    if grep -qF "$BLOCK_BEGIN" "$VHOST_FILE"; then
+      echo "✏️ Updating existing vhost block for ${WP_HOST} in 000-default.conf"
+      TMP_FILE="$(mktemp)"
+      awk -v start="$BLOCK_BEGIN" -v end="$BLOCK_END" '
+        BEGIN {inblk=0}
+        {
+          if ($0==start) {print start; inblk=1; next}
+          if ($0==end)   {print end; inblk=0; next}
+          if (!inblk) print
+        }' "$VHOST_FILE" > "$TMP_FILE"
+      # Insert fresh block at the end (keeps order, avoids nested awk complexity)
+      $SUDO bash -c "cat '$TMP_FILE' > '$VHOST_FILE'"
+      $SUDO bash -c "printf '\n\n' >> '$VHOST_FILE'"
+      $SUDO bash -c "cat '$TMP_BLOCK' >> '$VHOST_FILE'"
+      rm -f "$TMP_FILE"
+    else
+      echo "➕ Appending new vhost block for ${WP_HOST} to 000-default.conf"
+      $SUDO bash -c "printf '\n\n' >> '$VHOST_FILE'"
+      $SUDO bash -c "cat '$TMP_BLOCK' >> '$VHOST_FILE'"
+    fi
+    rm -f "$TMP_BLOCK"
 
-  # Ensure mod_rewrite, test & reload (no site renames/enables here)
-  $SUDO a2enmod rewrite >/dev/null 2>&1 || true
-  echo "🧪 apache2ctl configtest..."
-  if $SUDO apache2ctl configtest; then
-    echo "🔄 Reloading Apache..."
-    $SUDO systemctl reload apache2 || $SUDO service apache2 reload
-    echo "✅ Apache reloaded with ${WP_HOST} → ${WP_PATH} (inside 000-default.conf)"
+    # Ensure mod_rewrite, test & reload (no site renames/enables here)
+    $SUDO a2enmod rewrite >/dev/null 2>&1 || true
+    echo "🧪 apache2ctl configtest..."
+    if $SUDO apache2ctl configtest; then
+      echo "🔄 Reloading Apache..."
+      $SUDO systemctl reload apache2 || $SUDO service apache2 reload
+      echo "✅ Apache reloaded with ${WP_HOST} → ${WP_PATH} (inside 000-default.conf)"
+    else
+      echo "❌ Apache config test failed — restoring backup."
+      $SUDO cp "${VHOST_FILE}.bak.${TS}" "$VHOST_FILE"
+      exit 1
+    fi
   else
-    echo "❌ Apache config test failed — restoring backup."
-    $SUDO cp "${VHOST_FILE}.bak.${TS}" "$VHOST_FILE"
-    exit 1
+    echo "⚠️ Apache not detected — skipping VirtualHost update."
   fi
 else
-  echo "⚠️ Apache not detected — skipping VirtualHost update."
+  echo "⏭️ CREATE_VIRTUAL_HOST!=1 — skipping hosts + 000-default.conf work."
 fi
 
 # ---------- Database Setup ----------
