@@ -101,6 +101,58 @@ echo
 
 echo "🚀 Starting WordPress Installation..."
 
+# ---- Ensure WP-CLI is available -------------------------------------------
+# SUDO helper
+if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+
+# Minimal pkg installer (Debian/Ubuntu preferred; falls back to yum/dnf/apk)
+install_pkgs() {
+  if command -v apt-get >/dev/null 2>&1; then
+    $SUDO apt-get update -y && $SUDO apt-get install -y "$@"
+  elif command -v dnf >/dev/null 2>&1; then
+    $SUDO dnf install -y "$@"
+  elif command -v yum >/dev/null 2>&1; then
+    $SUDO yum install -y "$@"
+  elif command -v apk >/dev/null 2>&1; then
+    $SUDO apk add --no-cache "$@"
+  else
+    echo "⚠️ Could not detect package manager to install: $*"
+    return 1
+  fi
+}
+
+ensure_wp_cli() {
+  if command -v wp >/dev/null 2>&1; then
+    echo "✅ WP-CLI found: $(command -v wp) ($(wp --version 2>/dev/null))"
+  else
+    echo "⬇️ Installing WP-CLI ..."
+    # Ensure deps
+    command -v php >/dev/null 2>&1 || install_pkgs php-cli || install_pkgs php
+    command -v curl >/dev/null 2>&1 || install_pkgs curl
+
+    tmp="/tmp/wp-cli.phar"
+    curl -sSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o "$tmp" || {
+      echo "❌ Failed to download WP-CLI phar"; exit 1;
+    }
+    chmod +x "$tmp"
+
+    # Prefer system-wide location; fall back to ~/.local/bin
+    if $SUDO mv "$tmp" /usr/local/bin/wp 2>/dev/null; then
+      echo "✅ Installed WP-CLI to /usr/local/bin/wp"
+    else
+      mkdir -p "$HOME/.local/bin"
+      mv "$tmp" "$HOME/.local/bin/wp"
+      export PATH="$HOME/.local/bin:$PATH"
+      echo "✅ Installed WP-CLI to $HOME/.local/bin/wp (PATH updated for this run)"
+    fi
+  fi
+
+  # Allow running as root (common in provisioning)
+  if [ "$(id -u)" -eq 0 ]; then export WP_CLI_ALLOW_ROOT=1; fi
+}
+
+ensure_wp_cli
+
 # Create installation directory
 mkdir -p "$WP_PATH"
 cd "$WP_PATH" || exit 1
