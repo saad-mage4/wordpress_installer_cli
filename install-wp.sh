@@ -247,6 +247,38 @@ wp config create \
   --path="$WP_PATH" \
   --skip-check --allow-root
 
+# ---- Raise PHP execution time in wp-config.php (idempotent) ----
+WPCFG="$WP_PATH/wp-config.php"
+
+if [ -f "$WPCFG" ]; then
+  # Skip if we already added it
+  if ! grep -q "max_execution_time.*3600" "$WPCFG"; then
+    echo "⏱️ Adding max_execution_time=3600 to wp-config.php …"
+    SNIPPET="$(mktemp)"
+    cat > "$SNIPPET" <<'PHP'
+/* Bump PHP execution time for heavy tasks */
+@ini_set('max_execution_time', '3600');  // 3600 seconds = 1 hour
+@set_time_limit(3600);
+PHP
+
+    TMP="$(mktemp)"
+    awk -v f="$SNIPPET" '
+      BEGIN{done=0}
+      { print }
+      !done && /That'"'"'s all, stop editing! Happy publishing\./ {
+        system("cat " f); 
+        done=1
+      }
+    ' "$WPCFG" > "$TMP" && mv "$TMP" "$WPCFG"
+    rm -f "$SNIPPET"
+    echo "✅ Inserted execution time snippet after the stop-editing marker."
+  else
+    echo "ℹ️ max_execution_time snippet already present; skipping."
+  fi
+else
+  echo "❌ wp-config.php not found at $WPCFG (did wp config create run?)"
+fi
+
 # ---------- Install WP ----------
 echo "📝 Installing WordPress..."
 wp core install \
