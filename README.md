@@ -7,7 +7,7 @@
 sudo CREATE_VIRTUAL_HOST=1 bash install-wp.sh
 ```
 
-#### If you want to give 777 permission to wp directory pass this parameter below.
+#### If you want to give 777 permission to wp directory pass this parameter below, this is because of images are not going into media directory because of permission issue.
 ```javascript
 sudo INSECURE_PERMS=1 bash install-wp.sh
 ```
